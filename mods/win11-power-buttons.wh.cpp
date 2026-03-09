@@ -93,12 +93,12 @@ Adds customizable one-click Shut down, Restart, Sign out, Sleep, Hibernate, and 
 #include <winrt/Windows.UI.Xaml.Controls.h>
 #include <winrt/Windows.UI.Xaml.Controls.Primitives.h>
 #include <winrt/Windows.UI.Xaml.Media.h>
+#include <winrt/Windows.UI.Xaml.Markup.h>
 #include <winrt/Windows.System.h>
 
 namespace wux = winrt::Windows::UI::Xaml;
 namespace wuxc = winrt::Windows::UI::Xaml::Controls;
 namespace wuxm = winrt::Windows::UI::Xaml::Media;
-namespace wu = winrt::Windows::UI;
 namespace wuc = winrt::Windows::UI::Core;
 
 // Global state flags
@@ -446,6 +446,52 @@ static winrt::weak_ref<wuxc::Panel> g_parentPanel{ nullptr };
 static winrt::weak_ref<wux::FrameworkElement> g_originalPowerButton{ nullptr };
 static winrt::weak_ref<wuxc::StackPanel> g_buttonContainer{ nullptr };
 
+// Applies the native Windows 11 power button styles to a custom button.
+// This includes dimensions (40x40), transparent background, a 4px corner radius,
+// and the hover/pressed effects used by the official Start menu.
+static void ApplyNativePowerButtonStyle(wuxc::Control const& btn) {
+    // The following XAML string uses undocumented Shell theme resources extracted from
+    // the official Windows 11 Start Menu XAML resources (StartResources.xbf).
+    // Reference: https://gist.github.com/m417z/a7e4e2c7b451ee79c62c51ca2dba7349
+    static const std::wstring xamlStr = LR"(
+        <ResourceDictionary
+            xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+            xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+            <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="{ThemeResource ShellSubtleItemFillColorSecondary}" />
+            <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="{ThemeResource ShellSubtleItemFillColorTertiary}" />
+            <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="{ThemeResource TextFillColorPrimary}" />
+            <SolidColorBrush x:Key="ButtonForegroundPressed" Color="{ThemeResource TextFillColorSecondary}" />
+            <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent" />
+            <SolidColorBrush x:Key="ButtonBorderBrushPressed" Color="Transparent" />
+        </ResourceDictionary>
+    )";
+
+    try {
+        // Parse and apply the built-in Start menu hover and pressed effects
+        auto inspectable = wux::Markup::XamlReader::Load(xamlStr);
+        auto dict = inspectable.as<wux::ResourceDictionary>();
+
+        btn.Resources().MergedDictionaries().Append(dict);
+
+        // Set the button's base dimensions and constant styles
+        btn.Width(40);
+        btn.Height(40);
+        btn.Background(wux::Media::SolidColorBrush(winrt::Windows::UI::Colors::Transparent())); 
+        btn.BorderBrush(wux::Media::SolidColorBrush(winrt::Windows::UI::Colors::Transparent())); 
+        btn.BorderThickness({0, 0, 0, 0}); 
+        btn.CornerRadius({4, 4, 4, 4}); 
+
+        // Extract the Primary color from Application.Resources to use as the default foreground
+        auto appResources = wux::Application::Current().Resources();
+        if (appResources.HasKey(winrt::box_value(L"TextFillColorPrimaryBrush"))) {
+            btn.Foreground(appResources.Lookup(winrt::box_value(L"TextFillColorPrimaryBrush")).as<wux::Media::Brush>());
+        }
+
+    } catch (...) {
+        Wh_Log(L"Failed to apply official Shell hover style.");
+    }
+}
+
 static void InjectButtons(wuxc::Panel parentPanel, wux::FrameworkElement originalPowerButton) {
     try {
         Settings currentSettings;
@@ -505,27 +551,16 @@ static void InjectButtons(wuxc::Panel parentPanel, wux::FrameworkElement origina
         }
 
         // Fast path: if the button count matches and no rebuild is forced,
-        // only update layout properties to handle potential style changes.
-        if (!g_forceRebuild.exchange(false) &&
-            container.Children().Size() == currentButtons.size()) {
-
-            if (container.Visibility() != wux::Visibility::Visible)
-                container.Visibility(wux::Visibility::Visible);
-
-            if (container.HorizontalAlignment() != currentSettings.alignment)
-                container.HorizontalAlignment(currentSettings.alignment);
-
-            container.Margin({ 0, 0, 0, 0 });
+        // everything is already up-to-date.
+        if (!g_forceRebuild.exchange(false) && container.Children().Size() == currentButtons.size()) {
             return;
         }
 
         // Full rebuild path
-        if (container.Visibility() != wux::Visibility::Visible)
-            container.Visibility(wux::Visibility::Visible);
-
+        
+        // Set the spacing between buttons
+        container.Spacing(4.0);
         container.HorizontalAlignment(currentSettings.alignment);
-
-        container.Margin({ 0, 0, 0, 0 });
 
         container.Children().Clear();
 
@@ -534,20 +569,9 @@ static void InjectButtons(wuxc::Panel parentPanel, wux::FrameworkElement origina
 
             wuxc::Button btn;
             btn.Name(def->name);
-            btn.Width(40);
-            btn.Height(40);
 
-            // Apply margin only between buttons, not on outer edges
-            if (i == currentButtons.size() - 1) {
-                btn.Margin({ 0, 0, 0, 0 });
-            } else {
-                btn.Margin({ 0, 0, 4, 0 });
-            }
-
-            // Style the button to be transparent and blend with the Start Menu
-            btn.Background(wuxm::SolidColorBrush(wu::Colors::Transparent()));
-            btn.BorderThickness({ 0, 0, 0, 0 });
-            btn.CornerRadius({ 4, 4, 4, 4 });
+            // Apply native styles
+            ApplyNativePowerButtonStyle(btn);
 
             wuxc::FontIcon icon;
             icon.Glyph(def->glyph);
