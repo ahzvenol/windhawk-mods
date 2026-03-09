@@ -185,36 +185,31 @@ struct ButtonDefinition {
     std::wstring keyword;
     PowerAction action;
     const wchar_t* glyph;
+    const wchar_t* name;   // XAML Name
 };
 
 // Glyphs are from Segoe Fluent Icons.
 static const std::vector<ButtonDefinition> g_buttonDefinitions = {
-    {L"shutdown",  PowerAction::Shutdown,  L"\uE7E8"},
-    {L"restart",   PowerAction::Restart,   L"\uE777"},
-    {L"signout",   PowerAction::SignOut,   L"\uF3B1"},
-    {L"sleep",     PowerAction::Sleep,     L"\uE708"},
-    {L"hibernate", PowerAction::Hibernate, L"\uE823"},
-    {L"lock",      PowerAction::Lock,      L"\uE72E"},
+    {L"shutdown",  PowerAction::Shutdown,  L"\uE7E8", L"ShutdownButton"},
+    {L"restart",   PowerAction::Restart,   L"\uE777", L"RestartButton"},
+    {L"signout",   PowerAction::SignOut,   L"\uF3B1", L"SignOutButton"},
+    {L"sleep",     PowerAction::Sleep,     L"\uE708", L"SleepButton"},
+    {L"hibernate", PowerAction::Hibernate, L"\uE823", L"HibernateButton"},
+    {L"lock",      PowerAction::Lock,      L"\uE72E", L"LockButton"},
 };
 
-struct ButtonConfig {
-    PowerAction action;
-    const wchar_t* glyph;
-};
-
-static std::vector<ButtonConfig> g_buttons;
+static std::vector<const ButtonDefinition*> g_buttons;
 
 // Maps configuration keywords to actionable button definitions, ensuring uniqueness
 static void BuildButtons() {
     std::lock_guard<std::mutex> lock(g_settingsMutex);
-
     g_buttons.clear();
     std::set<PowerAction> seen;
 
     for (const auto& keyword : g_settings.buttonKeywords) {
         for (const auto& def : g_buttonDefinitions) {
             if (def.keyword == keyword && seen.insert(def.action).second) {
-                g_buttons.push_back({def.action, def.glyph});
+                g_buttons.push_back(&def);
                 break;
             }
         }
@@ -444,7 +439,7 @@ static bool IsExplorerProcess() {
 // Start Menu UI Injection
 // ============================================================================
 
-static const wchar_t* CONTAINER_TAG  = L"PowerButtons_Container";
+static const wchar_t* CONTAINER_NAME = L"PowerButtonsPanel";
 
 // Weak references to key UI elements to avoid repeated VisualTree traversal
 static winrt::weak_ref<wuxc::Panel> g_parentPanel{ nullptr };
@@ -454,7 +449,7 @@ static winrt::weak_ref<wuxc::StackPanel> g_buttonContainer{ nullptr };
 static void InjectButtons(wuxc::Panel parentPanel, wux::FrameworkElement originalPowerButton) {
     try {
         Settings currentSettings;
-        std::vector<ButtonConfig> currentButtons;
+        std::vector<const ButtonDefinition*> currentButtons;
         {
             std::lock_guard<std::mutex> lock(g_settingsMutex);
             currentSettings = g_settings;
@@ -484,14 +479,13 @@ static void InjectButtons(wuxc::Panel parentPanel, wux::FrameworkElement origina
             }
         }
 
-        // Cache miss: scan children to locate the tagged container
+        // Cache miss: scan children to locate the container by Name
         if (!container) {
             auto children = parentPanel.Children();
             for (uint32_t i = 0; i < children.Size(); i++) {
                 auto child = children.GetAt(i);
                 if (auto panel = child.try_as<wuxc::StackPanel>()) {
-                    auto tag = panel.Tag();
-                    if (tag && winrt::unbox_value_or<winrt::hstring>(tag, L"") == CONTAINER_TAG) {
+                    if (panel.Name() == CONTAINER_NAME) {
                         container = panel;
                         g_buttonContainer = container;
                         break;
@@ -503,7 +497,7 @@ static void InjectButtons(wuxc::Panel parentPanel, wux::FrameworkElement origina
         // If still not found, create and insert a new container
         if (!container) {
             container = wuxc::StackPanel();
-            container.Tag(winrt::box_value(CONTAINER_TAG));
+            container.Name(CONTAINER_NAME);
             container.Orientation(wuxc::Orientation::Horizontal);
             container.VerticalAlignment(wux::VerticalAlignment::Center);
             parentPanel.Children().Append(container);
@@ -536,9 +530,10 @@ static void InjectButtons(wuxc::Panel parentPanel, wux::FrameworkElement origina
         container.Children().Clear();
 
         for (size_t i = 0; i < currentButtons.size(); i++) {
-            const auto& cfg = currentButtons[i];
+            const auto def = currentButtons[i];
 
             wuxc::Button btn;
+            btn.Name(def->name);
             btn.Width(40);
             btn.Height(40);
 
@@ -555,16 +550,15 @@ static void InjectButtons(wuxc::Panel parentPanel, wux::FrameworkElement origina
             btn.CornerRadius({ 4, 4, 4, 4 });
 
             wuxc::FontIcon icon;
-            icon.Glyph(cfg.glyph);
+            icon.Glyph(def->glyph);
             icon.FontFamily(wuxm::FontFamily(L"Segoe Fluent Icons"));
             icon.FontSize(16);
             btn.Content(icon);
 
-            wuxc::ToolTipService::SetToolTip(btn, winrt::box_value(GetActionDisplayName(cfg.action)));
+            wuxc::ToolTipService::SetToolTip(btn, winrt::box_value(GetActionDisplayName(def->action)));
 
-            PowerAction action = cfg.action;
-            btn.Click([action](auto&&, auto&&) {
-                SendPowerAction(action);
+            btn.Click([def](auto&&, auto&&) {
+                SendPowerAction(def->action);
             });
 
             container.Children().Append(btn);
@@ -717,8 +711,6 @@ static void StopVisibilityMonitoring() {
                     panel.Children().RemoveAt(index);
                 }
             }
-            // Clear tag/marker if used
-            panel.Tag(nullptr);
         }
 
         // Restore original power button visibility
